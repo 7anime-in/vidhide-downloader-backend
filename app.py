@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app) # Website se API call allow karne ke liye CORS enable hai
+CORS(app)
 
 @app.route('/')
 def home():
@@ -14,7 +14,6 @@ def get_download_link():
     if not file_code:
         return jsonify({'success': False, 'message': 'File code is required'}), 400
 
-    # Direct Vidhide Download Page URL
     direct_link = f"https://vidhidepro.com/d/{file_code}"
     
     return jsonify({
