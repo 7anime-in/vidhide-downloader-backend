@@ -4,10 +4,10 @@ import requests
 import re
 
 app = Flask(__name__)
-CORS(app)  # Mobile Browser Cross-Origin Issue Fix
+CORS(app)
 
 def unpack_packer(packed_js):
-    """Dean Edwards JS Packer ko decode karne ka function"""
+    """Dean Edwards JS Packer decode function"""
     try:
         pattern = r"eval\(function\(p,a,c,k,e,d\)\{.*?\}\('(.*?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)"
         match = re.search(pattern, packed_js, re.DOTALL)
@@ -17,7 +17,6 @@ def unpack_packer(packed_js):
         payload, radix_str, count_str, symtab_str = match.groups()
         radix = int(radix_str)
         symtab = symtab_str.split('|')
-
         alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
         def decode_word(word):
@@ -32,55 +31,55 @@ def unpack_packer(packed_js):
             return word
 
         return re.sub(r'\b\w+\b', lambda m: decode_word(m.group(0)), payload)
-    except Exception as e:
+    except Exception:
         return ""
 
 @app.route('/')
 def home():
-    return "Vidhide Direct Downloader Backend is Live!"
+    return "Vidhide Downloader Backend Active"
 
 @app.route('/get-download-link', methods=['GET'])
 def get_download_link():
     file_code = request.args.get('code')
     if not file_code:
-        return jsonify({'success': False, 'message': 'File code is required'}), 400
+        return jsonify({'success': False, 'message': 'Code required'}), 400
 
     try:
+        # Embed page URL
         embed_url = f"https://vidhidepro.com/embed/{file_code}"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             'Referer': 'https://vidhidepro.com/'
         }
 
         response = requests.get(embed_url, headers=headers, timeout=10)
         html = response.text
 
-        # 1. Unpacked Javascript se direct source link nikalna
+        # Decode Packed JS
         unpacked_js = unpack_packer(html)
-        m3u8_match = re.search(r'(https?://[^\s"\']+\.m3u8[^\s"\']*)', unpacked_js)
-
-        if not m3u8_match:
-            # 2. Raw HTML me check karna
-            m3u8_match = re.search(r'(https?://[^\s"\']+\.m3u8[^\s"\']*)', html)
+        m3u8_match = re.search(r'(https?://[^\s"\']+\.m3u8[^\s"\']*)', unpacked_js) or re.search(r'(https?://[^\s"\']+\.m3u8[^\s"\']*)', html)
 
         if m3u8_match:
-            direct_m3u8_url = m3u8_match.group(1)
+            # Direct Stream URL extracted
+            stream_url = m3u8_match.group(1)
             return jsonify({
                 'success': True,
-                'download_url': direct_m3u8_url
+                'download_url': stream_url,
+                'is_stream': True
             })
         else:
-            # Fallback agar direct link scrape na ho paye
+            # Fallback to direct download page
             return jsonify({
                 'success': True,
-                'download_url': f"https://vidhidepro.com/d/{file_code}"
+                'download_url': f"https://vidhidepro.com/d/{file_code}",
+                'is_stream': False
             })
 
     except Exception as e:
-        print("Extraction Error:", e)
         return jsonify({
             'success': True,
-            'download_url': f"https://vidhidepro.com/d/{file_code}"
+            'download_url': f"https://vidhidepro.com/d/{file_code}",
+            'is_stream': False
         })
 
 if __name__ == '__main__':
