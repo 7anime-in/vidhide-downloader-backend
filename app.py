@@ -1,13 +1,21 @@
 import asyncio
+import os
+import glob
 
-# --- FIX FOR RENDER / PYTHON 3.10+ EVENT LOOP ISSUE ---
+# Startup par purani session files remove karna taaki Render par lock crash na ho
+for session_file in glob.glob("*.session*"):
+    try:
+        os.remove(session_file)
+    except Exception:
+        pass
+
+# Fix asyncio event loop issue
 try:
     loop = asyncio.get_event_loop()
 except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-import os
 import re
 import queue
 import sqlite3
@@ -21,7 +29,7 @@ from pyrogram import Client, filters
 # -------------------------------------------------------------
 API_ID = 31169133
 API_HASH = "b836f4b836df4cf83c2d475a5ad3b285"
-BOT_TOKEN = "8947200389:AAEhBe-mIYrnG4D26j0rksI5ztR_Jje8O9I"
+BOT_TOKEN = "8947200389:AAE528tXpX5fGIodeSOacZFZILJVGCPCFrE"
 
 app = Flask(__name__)
 CORS(app)
@@ -41,7 +49,8 @@ def init_db():
             file_name TEXT
         )
     ''')
-    # Auto-migration if chat_id column was missing in old DB
+    
+    # Auto-add chat_id column if upgrading from old DB
     cursor.execute("PRAGMA table_info(episodes)")
     columns = [column[1] for column in cursor.fetchall()]
     if 'chat_id' not in columns:
@@ -55,8 +64,14 @@ def init_db():
 
 init_db()
 
-# Memory mode prevents SQLite locks on Render
-bot = Client("7anime_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
+# in_memory=True prevents SQLite session lock issues on cloud hostings
+bot = Client(
+    name="7anime_session",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    in_memory=True
+)
 
 # -------------------------------------------------------------
 # TITLE CLEANING & PARSING LOGIC
@@ -131,7 +146,7 @@ def parse_anime_info(message):
     return anime_slug, season_num, episode_num
 
 # -------------------------------------------------------------
-# DYNAMIC LISTENER (WORKS FOR ANY CHANNEL OR PRIVATE DM)
+# DYNAMIC BOT LISTENER (CHANNEL & PRIVATE DM)
 # -------------------------------------------------------------
 @bot.on_message((filters.channel | filters.private) & (filters.video | filters.document))
 async def handle_incoming_videos(client, message):
@@ -142,7 +157,7 @@ async def handle_incoming_videos(client, message):
     clean_channel_id = str(chat_id).replace("-100", "")
     msg_link = f"https://t.me/c/{clean_channel_id}/{message.id}" if message.chat.type != "private" else "Private Chat"
 
-    # Bulk Indexing Handler
+    # Bulk Indexing
     bulk_match = re.search(r"/?bulk\s+([a-zA-Z0-9_-]+)\s+(\d+)\s+(\d+)", caption, re.IGNORECASE)
     if bulk_match:
         anime_slug = bulk_match.group(1).lower()
@@ -188,7 +203,7 @@ async def handle_incoming_videos(client, message):
         )
         return
 
-    # Single Video Handler
+    # Single Video Indexing
     anime_slug, season, episode = parse_anime_info(message)
 
     if episode is not None:
@@ -210,8 +225,7 @@ async def handle_incoming_videos(client, message):
             f"🎬 **Anime Name:** `{anime_slug}`\n"
             f"📌 **Season:** `{season}` | **Episode:** `{episode}`\n"
             f"🆔 **Msg ID:** `{message.id}`\n\n"
-            f"🔗 **Video Link:** {msg_link}\n\n"
-            f"⚠️ *Detail galat ho toh caption edit karke dubara post karein.*"
+            f"🔗 **Video Link:** {msg_link}"
         )
         await message.reply_text(reply_text, disable_web_page_preview=True)
 
@@ -269,11 +283,11 @@ def stream_video(msg_id):
         else:
             chunk_queue.put(None)
 
-    while True:
-        chunk = chunk_queue.get()
-        if chunk is None:
-            break
-        yield chunk
+        while True:
+            chunk = chunk_queue.get()
+            if chunk is None:
+                break
+            yield chunk
 
     return Response(generate(), mimetype='video/mp4')
 
@@ -287,12 +301,13 @@ async def main():
     flask_thread.start()
 
     print("🚀 Starting Pyrogram Client...")
-    await bot.start()
-
-    # Clear lingering webhook to activate polling
-    print("🧹 Clearing Webhook configuration...")
-    await bot.delete_webhook(drop_pending_updates=True)
-    print("✅ Pyrogram Listener is active!")
+    try:
+        await bot.start()
+        print("🧹 Clearing Webhook configuration...")
+        await bot.delete_webhook(drop_pending_updates=True)
+        print("✅ Pyrogram Listener is active and running!")
+    except Exception as e:
+        print(f"❌ Pyrogram Start Error: {e}")
 
     await asyncio.Event().wait()
 
