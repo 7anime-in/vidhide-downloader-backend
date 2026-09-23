@@ -2,14 +2,12 @@ import asyncio
 import os
 import glob
 import re
-import queue
 import sqlite3
-import threading
-from flask import Flask, request, jsonify, Response
-from flask_cors import CORS
+import json
+from aiohttp import web
 from pyrogram import Client, filters
 
-# Purane lock files clean karo
+# Purane lock/session files clean karo
 for session_file in glob.glob("*.session*"):
     try:
         os.remove(session_file)
@@ -20,9 +18,7 @@ API_ID = 31169133
 API_HASH = "b836f4b836df4cf83c2d475a5ad3b285"
 BOT_TOKEN = "8947200389:AAE528tXpX5fGIodeSOacZFZILJVGCPCFrE"
 
-app = Flask(__name__)
-CORS(app)
-
+# Database Init
 def init_db():
     conn = sqlite3.connect('database.db', check_same_thread=False)
     cursor = conn.cursor()
@@ -50,7 +46,7 @@ def init_db():
 
 init_db()
 
-# Pyrogram bot in-memory setup
+# Pyrogram Client Setup
 bot = Client(
     name="7anime_session",
     api_id=API_ID,
@@ -124,7 +120,7 @@ def parse_anime_info(message):
 
     return anime_slug, season_num, episode_num
 
-# Bot Listener
+# Pyrogram Message Handler
 @bot.on_message((filters.channel | filters.private | filters.group) & (filters.video | filters.document))
 async def handle_incoming_videos(client, message):
     chat_id = message.chat.id
@@ -161,15 +157,13 @@ async def handle_incoming_videos(client, message):
     except Exception as e:
         print(f"Error sending reply: {e}", flush=True)
 
-# Endpoints
-@app.route('/', methods=['GET'])
-def home():
-    return "7anime Backend Server Live!"
+# Web Server Handlers (aiohttp)
+async def handle_home(request):
+    return web.Response(text="7anime Backend Server Live!", status=200)
 
-@app.route('/api/episodes', methods=['GET'])
-def get_episodes():
-    anime_slug = request.args.get('anime', 'solo_leveling')
-    season = request.args.get('season', 1, type=int)
+async def handle_get_episodes(request):
+    anime_slug = request.query.get('anime', 'solo_leveling')
+    season = int(request.query.get('season', 1))
 
     conn = sqlite3.connect('database.db', check_same_thread=False)
     cursor = conn.cursor()
@@ -181,67 +175,76 @@ def get_episodes():
     conn.close()
 
     episodes = [{"ep": row[0], "msg_id": row[1], "file_name": row[2]} for row in rows]
-    return jsonify({"success": True, "episodes": episodes})
+    return web.json_response({"success": True, "episodes": episodes})
 
-@app.route('/stream/<int:msg_id>', methods=['GET'])
-def stream_video(msg_id):
+async def handle_stream_video(request):
+    msg_id = int(request.match_info['msg_id'])
+    is_download = request.query.get('download', '0')
+    
     conn = sqlite3.connect('database.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute('SELECT chat_id FROM episodes WHERE msg_id = ?', (msg_id,))
+    cursor.execute('SELECT chat_id, file_name FROM episodes WHERE msg_id = ?', (msg_id,))
     row = cursor.fetchone()
     conn.close()
 
-    target_chat_id = row[0] if row and row[0] else None
+    if not row:
+        return web.Response(text="Video not found in DB", status=404)
 
-    def generate():
-        chunk_queue = queue.Queue()
+    target_chat_id = row[0]
+    file_name = row[1] if row[1] else f"video_{msg_id}.mp4"
 
-        async def producer():
-            try:
-                if target_chat_id:
-                    msg = await bot.get_messages(target_chat_id, msg_id)
-                    if msg:
-                        async for chunk in bot.stream_media(msg):
-                            chunk_queue.put(chunk)
-            except Exception as e:
-                print(f"Streaming error: {e}", flush=True)
-            finally:
-                chunk_queue.put(None)
+    headers = {
+        'Content-Type': 'video/mp4',
+        'Accept-Ranges': 'bytes',
+    }
 
-        loop = getattr(bot, 'loop', None)
-        if loop and loop.is_running():
-            asyncio.run_coroutine_threadsafe(producer(), loop)
-        else:
-            chunk_queue.put(None)
+    # If 1-Click Download Requested
+    if is_download == '1':
+        headers['Content-Disposition'] = f'attachment; filename="{file_name}"'
 
-        while True:
-            chunk = chunk_queue.get()
-            if chunk is None:
-                break
-            yield chunk
+    response = web.StreamResponse(
+        status=200,
+        reason='OK',
+        headers=headers
+    )
+    await response.prepare(request)
 
-    return Response(generate(), mimetype='video/mp4')
+    try:
+        msg = await bot.get_messages(target_chat_id, msg_id)
+        if msg:
+            async for chunk in bot.stream_media(msg):
+                await response.write(chunk)
+    except Exception as e:
+        print(f"Streaming error: {e}", flush=True)
 
-def start_pyrogram():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    bot.loop = loop
+    await response.write_eof()
+    return response
+
+# Main Entrypoint
+async def main():
+    app_web = web.Application()
+    app_web.router.add_get('/', handle_home)
+    app_web.router.add_get('/api/episodes', handle_get_episodes)
+    app_web.router.add_get('/stream/{msg_id}', handle_stream_video)
+
+    runner = web.AppRunner(app_web)
+    await runner.setup()
     
-    async def run_bot():
-        print("🚀 Starting Pyrogram Client...", flush=True)
-        await bot.start()
-        await bot.delete_webhook(drop_pending_updates=True)
-        print("✅ Pyrogram Listener Active!", flush=True)
-        await asyncio.Event().wait()
+    port = int(os.environ.get('PORT', 5000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"🚀 Web Server running on port {port}", flush=True)
 
-    loop.run_until_complete(run_bot())
+    print("🚀 Starting Pyrogram Client...", flush=True)
+    await bot.start()
+    await bot.delete_webhook(drop_pending_updates=True)
+    print("✅ Pyrogram Listener Active & Ready!", flush=True)
+
+    await asyncio.Event().wait()
 
 if __name__ == '__main__':
-    # Start bot in separate daemon thread
-    t = threading.Thread(target=start_pyrogram, daemon=True)
-    t.start()
-
-    # Flask runs on main thread
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
-    
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Server Stopped.")
+        
