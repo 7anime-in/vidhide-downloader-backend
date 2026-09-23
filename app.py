@@ -1,7 +1,6 @@
 import asyncio
 
 # --- FIX FOR RENDER / PYTHON 3.10+ EVENT LOOP ISSUE ---
-# Pyrogram import hone se pehle asyncio loop ka hona zaroori hai
 try:
     loop = asyncio.get_event_loop()
 except RuntimeError:
@@ -18,12 +17,11 @@ from flask_cors import CORS
 from pyrogram import Client, filters
 
 # -------------------------------------------------------------
-# TELEGRAM BOT CREDENTIALS & CHANNEL ID
+# TELEGRAM BOT CREDENTIALS
 # -------------------------------------------------------------
 API_ID = 31169133
 API_HASH = "b836f4b836df4cf83c2d475a5ad3b285"
 BOT_TOKEN = "8947200389:AAEhBe-mIYrnG4D26j0rksI5ztR_Jje8O9I"
-CHANNEL_ID = -1002566941795
 
 app = Flask(__name__)
 CORS(app)
@@ -37,17 +35,27 @@ def init_db():
             anime_slug TEXT,
             season INTEGER,
             episode INTEGER,
+            chat_id INTEGER,
             msg_id INTEGER UNIQUE,
             file_id TEXT,
             file_name TEXT
         )
     ''')
+    # Auto-migration if chat_id column was missing in old DB
+    cursor.execute("PRAGMA table_info(episodes)")
+    columns = [column[1] for column in cursor.fetchall()]
+    if 'chat_id' not in columns:
+        try:
+            cursor.execute("ALTER TABLE episodes ADD COLUMN chat_id INTEGER")
+        except Exception:
+            pass
+            
     conn.commit()
     conn.close()
 
 init_db()
 
-# in_memory=True prevents SQLite lock issues on Render
+# Memory mode prevents SQLite locks on Render
 bot = Client("7anime_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 
 # -------------------------------------------------------------
@@ -123,17 +131,18 @@ def parse_anime_info(message):
     return anime_slug, season_num, episode_num
 
 # -------------------------------------------------------------
-# AUTOMATIC LISTENER (CHANNEL + PRIVATE DM BOTH SUPPORTED)
+# DYNAMIC LISTENER (WORKS FOR ANY CHANNEL OR PRIVATE DM)
 # -------------------------------------------------------------
-@bot.on_message((filters.chat(CHANNEL_ID) | filters.private) & (filters.video | filters.document))
+@bot.on_message((filters.channel | filters.private) & (filters.video | filters.document))
 async def handle_incoming_videos(client, message):
-    print(f" [LOG] Video detected | Chat ID: {message.chat.id} | Msg ID: {message.id}")
+    chat_id = message.chat.id
+    print(f" [LOG] Video received | Chat ID: {chat_id} | Msg ID: {message.id}")
     caption = message.caption or ""
     
-    clean_channel_id = str(message.chat.id).replace("-100", "")
-    msg_link = f"https://t.me/c/{clean_channel_id}/{message.id}" if message.chat.type != "private" else "Private DM"
+    clean_channel_id = str(chat_id).replace("-100", "")
+    msg_link = f"https://t.me/c/{clean_channel_id}/{message.id}" if message.chat.type != "private" else "Private Chat"
 
-    # Bulk Indexing Command Handler
+    # Bulk Indexing Handler
     bulk_match = re.search(r"/?bulk\s+([a-zA-Z0-9_-]+)\s+(\d+)\s+(\d+)", caption, re.IGNORECASE)
     if bulk_match:
         anime_slug = bulk_match.group(1).lower()
@@ -150,16 +159,16 @@ async def handle_incoming_videos(client, message):
 
         while saved_count < total_count and (current_msg_id - first_msg_id) < (total_count * 3):
             try:
-                target_msg = await bot.get_messages(message.chat.id, current_msg_id)
+                target_msg = await bot.get_messages(chat_id, current_msg_id)
                 if target_msg and (target_msg.video or target_msg.document):
                     media_item = target_msg.video or target_msg.document
                     f_id = media_item.file_id
                     f_name = getattr(media_item, 'file_name', f"{anime_slug}_S{season}E{current_ep}.mp4")
 
                     cursor.execute('''
-                        INSERT OR REPLACE INTO episodes (anime_slug, season, episode, msg_id, file_id, file_name)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (anime_slug, season, current_ep, target_msg.id, f_id, f_name))
+                        INSERT OR REPLACE INTO episodes (anime_slug, season, episode, chat_id, msg_id, file_id, file_name)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (anime_slug, season, current_ep, chat_id, target_msg.id, f_id, f_name))
                     
                     saved_count += 1
                     current_ep += 1
@@ -179,7 +188,7 @@ async def handle_incoming_videos(client, message):
         )
         return
 
-    # Single Video Auto-Parse & Save
+    # Single Video Handler
     anime_slug, season, episode = parse_anime_info(message)
 
     if episode is not None:
@@ -190,9 +199,9 @@ async def handle_incoming_videos(client, message):
         conn = sqlite3.connect('database.db', check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT OR REPLACE INTO episodes (anime_slug, season, episode, msg_id, file_id, file_name)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (anime_slug, season, episode, message.id, f_id, file_name))
+            INSERT OR REPLACE INTO episodes (anime_slug, season, episode, chat_id, msg_id, file_id, file_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (anime_slug, season, episode, chat_id, message.id, f_id, file_name))
         conn.commit()
         conn.close()
 
@@ -202,7 +211,7 @@ async def handle_incoming_videos(client, message):
             f"📌 **Season:** `{season}` | **Episode:** `{episode}`\n"
             f"🆔 **Msg ID:** `{message.id}`\n\n"
             f"🔗 **Video Link:** {msg_link}\n\n"
-            f"⚠️ *Agar detail galat lag rahi ho toh caption edit karke dubara post karein.*"
+            f"⚠️ *Detail galat ho toh caption edit karke dubara post karein.*"
         )
         await message.reply_text(reply_text, disable_web_page_preview=True)
 
@@ -232,14 +241,24 @@ def get_episodes():
 
 @app.route('/stream/<int:msg_id>', methods=['GET'])
 def stream_video(msg_id):
+    conn = sqlite3.connect('database.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT chat_id FROM episodes WHERE msg_id = ?', (msg_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    target_chat_id = row[0] if row and row[0] else None
+
     def generate():
         chunk_queue = queue.Queue()
 
         async def producer():
             try:
-                msg = await bot.get_messages(CHANNEL_ID, msg_id)
-                async for chunk in bot.stream_media(msg):
-                    chunk_queue.put(chunk)
+                if target_chat_id:
+                    msg = await bot.get_messages(target_chat_id, msg_id)
+                    if msg:
+                        async for chunk in bot.stream_media(msg):
+                            chunk_queue.put(chunk)
             except Exception as e:
                 print(f"Streaming error: {e}")
             finally:
@@ -248,14 +267,13 @@ def stream_video(msg_id):
         if loop and loop.is_running():
             asyncio.run_coroutine_threadsafe(producer(), loop)
         else:
-            print("Loop running status issue!")
             chunk_queue.put(None)
 
-        while True:
-            chunk = chunk_queue.get()
-            if chunk is None:
-                break
-            yield chunk
+    while True:
+        chunk = chunk_queue.get()
+        if chunk is None:
+            break
+        yield chunk
 
     return Response(generate(), mimetype='video/mp4')
 
@@ -264,7 +282,6 @@ def run_flask():
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 async def main():
-    # Flask server background thread
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
@@ -272,12 +289,11 @@ async def main():
     print("🚀 Starting Pyrogram Client...")
     await bot.start()
 
-    # WEBHOOK CLEARING (Ensures instant bot reply)
-    print("🧹 Clearing old Webhook configuration...")
+    # Clear lingering webhook to activate polling
+    print("🧹 Clearing Webhook configuration...")
     await bot.delete_webhook(drop_pending_updates=True)
-    print("✅ Webhook cleared! Pyrogram is active.")
+    print("✅ Pyrogram Listener is active!")
 
-    # Keep bot running
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
@@ -285,4 +301,4 @@ if __name__ == '__main__':
         loop.run_until_complete(main())
     except (KeyboardInterrupt, SystemExit):
         print("Bot stopped.")
-        
+    
