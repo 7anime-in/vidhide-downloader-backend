@@ -6,7 +6,7 @@ from flask_cors import CORS
 from pyrogram import Client, filters
 
 # -------------------------------------------------------------
-# YOUR CREDENTIALS & CHANNEL ID
+# TELEGRAM BOT CREDENTIALS & CHANNEL ID
 # -------------------------------------------------------------
 API_ID = 31169133
 API_HASH = "b836f4b836df4cf83c2d475a5ad3b285"
@@ -38,13 +38,12 @@ init_db()
 bot = Client("7anime_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # -------------------------------------------------------------
-# AUTO CAPTION & TITLE CLEANING LOGIC (FROM YOUR MAIN.PY)
+# TITLE CLEANING & PARSING LOGIC
 # -------------------------------------------------------------
 def clean_universal_title(text):
     if not text:
         return ""
     text = text.replace(".", " ").replace("_", " ")
-    # Clean unnecessary quality tags, codecs, audio, extension noise
     text = re.sub(
         r"(?:1080p|720p|480p|4k|x265|x264|10bit|BluRay|HDR|WEB-DL|Dual|Audio|ESub|FHD|HD|RareToonsIndia|Hindi|English|Sub|Dub|Multi|\.mkv|\.mp4)",
         "",
@@ -76,7 +75,6 @@ def parse_anime_info(message):
 
     combined_text = f"{caption}\n{filename}\n{forward_name}"
 
-    # 1. Extract Clean Anime Name
     anime_name = ""
     anime_match = re.search(r"(?:ANIME|Anime|Title)[:\s-]+\s*(.+)", caption, re.IGNORECASE)
     if anime_match:
@@ -92,17 +90,14 @@ def parse_anime_info(message):
     if not anime_name or len(anime_name) < 2:
         anime_name = "solo_leveling"
 
-    # Make URL-friendly slug (e.g. "Solo Leveling" -> "solo_leveling")
     anime_slug = re.sub(r"[^\w\s-]", "", anime_name).strip().lower()
     anime_slug = re.sub(r"[-\s]+", "_", anime_slug)
 
-    # 2. Extract Season
     season_num = 1
     season_match = re.search(r"(?:Season|S)[\s:-]*0*(\d+)", combined_text, re.IGNORECASE)
     if season_match:
         season_num = int(season_match.group(1))
 
-    # 3. Extract Episode
     episode_num = None
     se_match = re.search(r"S\d+E(\d+)", combined_text, re.IGNORECASE)
     if se_match:
@@ -115,13 +110,13 @@ def parse_anime_info(message):
     return anime_slug, season_num, episode_num
 
 # -------------------------------------------------------------
-# AUTOMATIC CHANNEL LISTENER (AUTO-CAPTION INDEXING)
+# AUTOMATIC CHANNEL LISTENER
 # -------------------------------------------------------------
 @bot.on_message(filters.chat(CHANNEL_ID) & (filters.video | filters.document))
 async def handle_incoming_videos(client, message):
     caption = message.caption or ""
     
-    # Check for /bulk command in caption (e.g., /bulk solo_leveling 1 12)
+    # 1. Bulk Auto-Indexing check (/bulk solo_leveling 1 12)
     bulk_match = re.search(r"/?bulk\s+([a-zA-Z0-9_-]+)\s+(\d+)\s+(\d+)", caption, re.IGNORECASE)
     
     if bulk_match:
@@ -162,7 +157,7 @@ async def handle_incoming_videos(client, message):
         print(f"✅ Bulk Auto Indexing Done: {anime_slug} Season {season} ({saved_count} Episodes)")
         return
 
-    # Auto Parser from main.py
+    # 2. Single Episode Auto Parsing
     anime_slug, season, episode = parse_anime_info(message)
 
     if episode is not None:
@@ -178,7 +173,7 @@ async def handle_incoming_videos(client, message):
         ''', (anime_slug, season, episode, message.id, f_id, file_name))
         conn.commit()
         conn.close()
-        print(f"✅ Smart Auto-Indexed: {anime_slug} | S{season}E{episode} | Msg ID: {message.id}")
+        print(f"✅ Auto-Indexed: {anime_slug} | S{season}E{episode} | Msg ID: {message.id}")
 
 # -------------------------------------------------------------
 # FRONTEND API ENDPOINTS
@@ -211,6 +206,7 @@ def stream_video(msg_id):
     return Response(generate(), mimetype='video/mp4')
 
 if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
     bot.start()
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=port)
     
