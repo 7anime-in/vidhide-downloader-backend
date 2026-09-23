@@ -1,9 +1,19 @@
 import os
 import re
 import sqlite3
+import asyncio
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from pyrogram import Client, filters
+
+# -------------------------------------------------------------
+# EVENT LOOP FIX FOR GUNICORN & PYROGRAM ON RENDER
+# -------------------------------------------------------------
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
 # -------------------------------------------------------------
 # TELEGRAM BOT CREDENTIALS & CHANNEL ID
@@ -35,7 +45,11 @@ def init_db():
 
 init_db()
 
-bot = Client("7anime_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# in_memory=True prevents SQLite session locks under Gunicorn
+bot = Client("7anime_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
+
+if not bot.is_connected:
+    loop.run_until_complete(bot.start())
 
 # -------------------------------------------------------------
 # TITLE CLEANING & PARSING LOGIC
@@ -110,12 +124,16 @@ def parse_anime_info(message):
     return anime_slug, season_num, episode_num
 
 # -------------------------------------------------------------
-# AUTOMATIC CHANNEL LISTENER
+# AUTOMATIC CHANNEL LISTENER WITH CONFIRMATION MESSAGE
 # -------------------------------------------------------------
 @bot.on_message(filters.chat(CHANNEL_ID) & (filters.video | filters.document))
 async def handle_incoming_videos(client, message):
     caption = message.caption or ""
     
+    # Generate Private Telegram Message Link
+    clean_channel_id = str(CHANNEL_ID).replace("-100", "")
+    msg_link = f"https://t.me/c/{clean_channel_id}/{message.id}"
+
     # 1. Bulk Auto-Indexing check (/bulk solo_leveling 1 12)
     bulk_match = re.search(r"/?bulk\s+([a-zA-Z0-9_-]+)\s+(\d+)\s+(\d+)", caption, re.IGNORECASE)
     
@@ -154,7 +172,14 @@ async def handle_incoming_videos(client, message):
 
         conn.commit()
         conn.close()
-        print(f"✅ Bulk Auto Indexing Done: {anime_slug} Season {season} ({saved_count} Episodes)")
+
+        await message.reply_text(
+            f"✅ **Bulk Indexing Complete!**\n\n"
+            f"🎬 **Anime Slug:** `{anime_slug}`\n"
+            f"📌 **Season:** `{season}` | **Total Saved:** `{saved_count}`\n"
+            f"🔗 [View Starting Message]({msg_link})",
+            disable_web_page_preview=True
+        )
         return
 
     # 2. Single Episode Auto Parsing
@@ -173,7 +198,17 @@ async def handle_incoming_videos(client, message):
         ''', (anime_slug, season, episode, message.id, f_id, file_name))
         conn.commit()
         conn.close()
-        print(f"✅ Auto-Indexed: {anime_slug} | S{season}E{episode} | Msg ID: {message.id}")
+
+        # Send confirmation reply directly to the uploaded message in channel
+        reply_text = (
+            f"✅ **Video Indexed Successfully!**\n\n"
+            f"🎬 **Anime Name:** `{anime_slug}`\n"
+            f"📌 **Season:** `{season}` | **Episode:** `{episode}`\n"
+            f"🆔 **Msg ID:** `{message.id}`\n\n"
+            f"🔗 **Video Link:** {msg_link}\n\n"
+            f"⚠️ *Agar detail galat lag rahi ho toh caption edit karke dubara post karein.*"
+        )
+        await message.reply_text(reply_text, disable_web_page_preview=True)
 
 # -------------------------------------------------------------
 # FRONTEND API ENDPOINTS
@@ -207,6 +242,5 @@ def stream_video(msg_id):
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    bot.start()
     app.run(host='0.0.0.0', port=port)
-    
+        
