@@ -1,25 +1,13 @@
 import asyncio
 import sys
 
-# Event loop fix for Python 3.10+
+# --- FIX FOR PYTHON 3.10+ EVENT LOOP CRASH ---
 try:
     loop = asyncio.get_event_loop()
 except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-# Baaki saare purane imports yahan se shuru honge:
-import os
-import glob
-import re
-import queue
-import sqlite3
-import threading
-from flask import Flask, request, jsonify, Response
-from flask_cors import CORS
-from pyrogram import Client, filters
-
-import asyncio
 import os
 import glob
 import re
@@ -266,9 +254,8 @@ def start_pyrogram():
 
     loop.run_until_complete(run_bot())
 
-# Background thread starter for Gunicorn / Render
 def init_bot_thread():
-    if not any(t.name == "PyrogramBotThread" for t in threading.thread.enumerate()):
+    if not any(t.name == "PyrogramBotThread" for t in threading.enumerate()):
         t = threading.Thread(target=start_pyrogram, daemon=True, name="PyrogramBotThread")
         t.start()
 
@@ -277,4 +264,4 @@ init_bot_thread()
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, use_reloader=False)
-        
+    
