@@ -123,15 +123,17 @@ def parse_anime_info(message):
     return anime_slug, season_num, episode_num
 
 # -------------------------------------------------------------
-# AUTOMATIC CHANNEL LISTENER WITH CONFIRMATION MESSAGE
+# AUTOMATIC LISTENER (CHANNEL + PRIVATE DM BOTH SUPPORTED)
 # -------------------------------------------------------------
-@bot.on_message(filters.chat(CHANNEL_ID) & (filters.video | filters.document))
+@bot.on_message((filters.chat(CHANNEL_ID) | filters.private) & (filters.video | filters.document))
 async def handle_incoming_videos(client, message):
-    print(f" [LOG] New video detected in channel | Msg ID: {message.id}")
+    print(f" [LOG] Video detected | Chat ID: {message.chat.id} | Msg ID: {message.id}")
     caption = message.caption or ""
-    clean_channel_id = str(CHANNEL_ID).replace("-100", "")
-    msg_link = f"https://t.me/c/{clean_channel_id}/{message.id}"
+    
+    clean_channel_id = str(message.chat.id).replace("-100", "")
+    msg_link = f"https://t.me/c/{clean_channel_id}/{message.id}" if message.chat.type != "private" else "Private DM"
 
+    # Bulk Indexing Command Handler
     bulk_match = re.search(r"/?bulk\s+([a-zA-Z0-9_-]+)\s+(\d+)\s+(\d+)", caption, re.IGNORECASE)
     if bulk_match:
         anime_slug = bulk_match.group(1).lower()
@@ -148,7 +150,7 @@ async def handle_incoming_videos(client, message):
 
         while saved_count < total_count and (current_msg_id - first_msg_id) < (total_count * 3):
             try:
-                target_msg = await bot.get_messages(CHANNEL_ID, current_msg_id)
+                target_msg = await bot.get_messages(message.chat.id, current_msg_id)
                 if target_msg and (target_msg.video or target_msg.document):
                     media_item = target_msg.video or target_msg.document
                     f_id = media_item.file_id
@@ -172,12 +174,12 @@ async def handle_incoming_videos(client, message):
         await message.reply_text(
             f"✅ **Bulk Indexing Complete!**\n\n"
             f"🎬 **Anime Slug:** `{anime_slug}`\n"
-            f"📌 **Season:** `{season}` | **Total Saved:** `{saved_count}`\n"
-            f"🔗 [View Starting Message]({msg_link})",
+            f"📌 **Season:** `{season}` | **Total Saved:** `{saved_count}`",
             disable_web_page_preview=True
         )
         return
 
+    # Single Video Auto-Parse & Save
     anime_slug, season, episode = parse_anime_info(message)
 
     if episode is not None:
@@ -262,7 +264,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 async def main():
-    # Flask server in background thread
+    # Flask server background thread
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
@@ -270,10 +272,10 @@ async def main():
     print("🚀 Starting Pyrogram Client...")
     await bot.start()
 
-    # REMOVE OLD WEBHOOK
+    # WEBHOOK CLEARING (Ensures instant bot reply)
     print("🧹 Clearing old Webhook configuration...")
     await bot.delete_webhook(drop_pending_updates=True)
-    print("✅ Webhook cleared! Pyrogram is now listening to channel messages.")
+    print("✅ Webhook cleared! Pyrogram is active.")
 
     # Keep bot running
     await asyncio.Event().wait()
@@ -283,4 +285,4 @@ if __name__ == '__main__':
         loop.run_until_complete(main())
     except (KeyboardInterrupt, SystemExit):
         print("Bot stopped.")
-    
+        
