@@ -248,8 +248,7 @@ def start_pyrogram():
     async def run_bot():
         print("🚀 Starting Pyrogram Client...", flush=True)
         await bot.start()
-        await bot.delete_webhook(drop_pending_updates=True)
-        print("✅ Pyrogram Listener Active!", flush=True)
+        print("✅ Pyrogram Listener Active & Ready!", flush=True)
         await asyncio.Event().wait()
 
     loop.run_until_complete(run_bot())
@@ -264,4 +263,4 @@ init_bot_thread()
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, use_reloader=False)
-    
+                                            
