@@ -1,5 +1,6 @@
-Flask
-Flask-CORS
+flask
+flask-cors
 pyrogram
 tgcrypto
+gunicorn
 requests
