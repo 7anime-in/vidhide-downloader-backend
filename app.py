@@ -1,4 +1,25 @@
 import asyncio
+import sys
+
+# Event loop fix for Python 3.10+
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+# Baaki saare purane imports yahan se shuru honge:
+import os
+import glob
+import re
+import queue
+import sqlite3
+import threading
+from flask import Flask, request, jsonify, Response
+from flask_cors import CORS
+from pyrogram import Client, filters
+
+import asyncio
 import os
 import glob
 import re
