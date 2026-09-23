@@ -1,12 +1,4 @@
 import asyncio
-
-# --- MUST BE AT THE VERY TOP BEFORE IMPORTING PYROGRAM ---
-try:
-    loop = asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
 import os
 import re
 import queue
@@ -27,8 +19,11 @@ CHANNEL_ID = -1002566941795
 app = Flask(__name__)
 CORS(app)
 
+# Global reference for asyncio event loop
+main_loop = None
+
 def init_db():
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect('database.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS episodes (
@@ -126,6 +121,7 @@ def parse_anime_info(message):
 # -------------------------------------------------------------
 @bot.on_message(filters.chat(CHANNEL_ID) & (filters.video | filters.document))
 async def handle_incoming_videos(client, message):
+    print(f" [LOG] New video detected in channel | Msg ID: {message.id}")
     caption = message.caption or ""
     clean_channel_id = str(CHANNEL_ID).replace("-100", "")
     msg_link = f"https://t.me/c/{clean_channel_id}/{message.id}"
@@ -137,7 +133,7 @@ async def handle_incoming_videos(client, message):
         total_count = int(bulk_match.group(3))
         first_msg_id = message.id
 
-        conn = sqlite3.connect('database.db')
+        conn = sqlite3.connect('database.db', check_same_thread=False)
         cursor = conn.cursor()
 
         saved_count = 0
@@ -159,8 +155,8 @@ async def handle_incoming_videos(client, message):
                     
                     saved_count += 1
                     current_ep += 1
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Error indexing msg {current_msg_id}: {e}")
             
             current_msg_id += 1
 
@@ -183,7 +179,7 @@ async def handle_incoming_videos(client, message):
         f_id = media.file_id
         file_name = getattr(media, 'file_name', f"{anime_slug}_S{season}E{episode}.mp4")
 
-        conn = sqlite3.connect('database.db')
+        conn = sqlite3.connect('database.db', check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO episodes (anime_slug, season, episode, msg_id, file_id, file_name)
@@ -214,7 +210,7 @@ def get_episodes():
     anime_slug = request.args.get('anime', 'solo_leveling')
     season = request.args.get('season', 1, type=int)
 
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect('database.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT episode, msg_id, file_name FROM episodes 
@@ -241,8 +237,11 @@ def stream_video(msg_id):
             finally:
                 chunk_queue.put(None)
 
-        # Thread-safe execution onto the main event loop
-        asyncio.run_coroutine_threadsafe(producer(), loop)
+        if main_loop and main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(producer(), main_loop)
+        else:
+            print("Main loop running status issue!")
+            chunk_queue.put(None)
 
         while True:
             chunk = chunk_queue.get()
@@ -256,11 +255,29 @@ def run_flask():
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
-if __name__ == '__main__':
+async def main():
+    global main_loop
+    main_loop = asyncio.get_running_loop()
+
+    # Flask server in background thread
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    print("🚀 Starting Pyrogram Bot...")
-    bot.run()
-    
+    print("🚀 Starting Pyrogram Client...")
+    await bot.start()
+
+    # REMOVE OLD WEBHOOK (Isse Bot instantly reply karna shuru kar dega)
+    print("🧹 Clearing old Webhook configuration...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    print("✅ Webhook cleared! Pyrogram is now listening to channel messages.")
+
+    # Keep bot running
+    await asyncio.Event().wait()
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Bot stopped.")
+        
