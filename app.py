@@ -1,4 +1,13 @@
 import asyncio
+
+# --- FIX FOR RENDER / PYTHON 3.10+ EVENT LOOP ISSUE ---
+# Pyrogram import hone se pehle asyncio loop ka hona zaroori hai
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 import os
 import re
 import queue
@@ -18,9 +27,6 @@ CHANNEL_ID = -1002566941795
 
 app = Flask(__name__)
 CORS(app)
-
-# Global reference for asyncio event loop
-main_loop = None
 
 def init_db():
     conn = sqlite3.connect('database.db', check_same_thread=False)
@@ -237,10 +243,10 @@ def stream_video(msg_id):
             finally:
                 chunk_queue.put(None)
 
-        if main_loop and main_loop.is_running():
-            asyncio.run_coroutine_threadsafe(producer(), main_loop)
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(producer(), loop)
         else:
-            print("Main loop running status issue!")
+            print("Loop running status issue!")
             chunk_queue.put(None)
 
         while True:
@@ -256,9 +262,6 @@ def run_flask():
     app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 async def main():
-    global main_loop
-    main_loop = asyncio.get_running_loop()
-
     # Flask server in background thread
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
@@ -267,7 +270,7 @@ async def main():
     print("🚀 Starting Pyrogram Client...")
     await bot.start()
 
-    # REMOVE OLD WEBHOOK (Isse Bot instantly reply karna shuru kar dega)
+    # REMOVE OLD WEBHOOK
     print("🧹 Clearing old Webhook configuration...")
     await bot.delete_webhook(drop_pending_updates=True)
     print("✅ Webhook cleared! Pyrogram is now listening to channel messages.")
@@ -277,7 +280,7 @@ async def main():
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        loop.run_until_complete(main())
     except (KeyboardInterrupt, SystemExit):
         print("Bot stopped.")
-        
+    
