@@ -1,19 +1,20 @@
-import os
-import re
-import sqlite3
 import asyncio
-from flask import Flask, request, jsonify, Response
-from flask_cors import CORS
-from pyrogram import Client, filters
 
-# -------------------------------------------------------------
-# EVENT LOOP FIX FOR GUNICORN & PYROGRAM ON RENDER
-# -------------------------------------------------------------
+# --- MUST BE AT THE VERY TOP BEFORE IMPORTING PYROGRAM ---
 try:
     loop = asyncio.get_event_loop()
 except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+import os
+import re
+import queue
+import sqlite3
+import threading
+from flask import Flask, request, jsonify, Response
+from flask_cors import CORS
+from pyrogram import Client, filters
 
 # -------------------------------------------------------------
 # TELEGRAM BOT CREDENTIALS & CHANNEL ID
@@ -45,11 +46,8 @@ def init_db():
 
 init_db()
 
-# in_memory=True prevents SQLite session locks under Gunicorn
+# in_memory=True prevents SQLite lock issues on Render
 bot = Client("7anime_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
-
-if not bot.is_connected:
-    loop.run_until_complete(bot.start())
 
 # -------------------------------------------------------------
 # TITLE CLEANING & PARSING LOGIC
@@ -129,14 +127,10 @@ def parse_anime_info(message):
 @bot.on_message(filters.chat(CHANNEL_ID) & (filters.video | filters.document))
 async def handle_incoming_videos(client, message):
     caption = message.caption or ""
-    
-    # Generate Private Telegram Message Link
     clean_channel_id = str(CHANNEL_ID).replace("-100", "")
     msg_link = f"https://t.me/c/{clean_channel_id}/{message.id}"
 
-    # 1. Bulk Auto-Indexing check (/bulk solo_leveling 1 12)
     bulk_match = re.search(r"/?bulk\s+([a-zA-Z0-9_-]+)\s+(\d+)\s+(\d+)", caption, re.IGNORECASE)
-    
     if bulk_match:
         anime_slug = bulk_match.group(1).lower()
         season = int(bulk_match.group(2))
@@ -182,7 +176,6 @@ async def handle_incoming_videos(client, message):
         )
         return
 
-    # 2. Single Episode Auto Parsing
     anime_slug, season, episode = parse_anime_info(message)
 
     if episode is not None:
@@ -199,7 +192,6 @@ async def handle_incoming_videos(client, message):
         conn.commit()
         conn.close()
 
-        # Send confirmation reply directly to the uploaded message in channel
         reply_text = (
             f"✅ **Video Indexed Successfully!**\n\n"
             f"🎬 **Anime Name:** `{anime_slug}`\n"
@@ -213,6 +205,10 @@ async def handle_incoming_videos(client, message):
 # -------------------------------------------------------------
 # FRONTEND API ENDPOINTS
 # -------------------------------------------------------------
+@app.route('/', methods=['GET'])
+def home():
+    return "7anime Backend Server Live!"
+
 @app.route('/api/episodes', methods=['GET'])
 def get_episodes():
     anime_slug = request.args.get('anime', 'solo_leveling')
@@ -232,15 +228,39 @@ def get_episodes():
 
 @app.route('/stream/<int:msg_id>', methods=['GET'])
 def stream_video(msg_id):
-    async def generate():
-        async with bot:
-            msg = await bot.get_messages(CHANNEL_ID, msg_id)
-            async for chunk in bot.stream_media(msg):
-                yield chunk
+    def generate():
+        chunk_queue = queue.Queue()
+
+        async def producer():
+            try:
+                msg = await bot.get_messages(CHANNEL_ID, msg_id)
+                async for chunk in bot.stream_media(msg):
+                    chunk_queue.put(chunk)
+            except Exception as e:
+                print(f"Streaming error: {e}")
+            finally:
+                chunk_queue.put(None)
+
+        # Thread-safe execution onto the main event loop
+        asyncio.run_coroutine_threadsafe(producer(), loop)
+
+        while True:
+            chunk = chunk_queue.get()
+            if chunk is None:
+                break
+            yield chunk
 
     return Response(generate(), mimetype='video/mp4')
 
-if __name__ == '__main__':
+def run_flask():
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
-        
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
+
+if __name__ == '__main__':
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    print("🚀 Starting Pyrogram Bot...")
+    bot.run()
+    
